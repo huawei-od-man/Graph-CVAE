@@ -1,7 +1,7 @@
 import pytest
 import networkx as nx
 from qiskit.transpiler import CouplingMap
-from topologies import closest_factors, generate_jellyfish_network, generate_graph_by_model, generate_coupling_map
+from topologies import closest_factors, create_jellyfish_graph, generate_graph_by_model, generate_coupling_map
 
 def test_closest_factors():
     # 测试完全平方数
@@ -15,15 +15,13 @@ def test_closest_factors():
 
 def test_generate_jellyfish_network():
     N = 5
-    d = 2
-    g = generate_jellyfish_network(N, d)
+    g = create_jellyfish_graph(N)
     # 验证节点数
     assert g.number_of_nodes() == N
     # 验证每个节点的度数不超过d
-    for node in g.nodes:
-        assert g.degree(node) <= d
     # 验证无自环
     assert not any(g.has_edge(node, node) for node in g.nodes)
+    assert nx.is_connected(g)
 
 def test_generate_graph_by_model():
     # 测试线性拓扑
@@ -38,7 +36,7 @@ def test_generate_graph_by_model():
     assert star.edges == nx.star_graph(4).edges  # star_graph(n)生成n+1个节点
 
     # 测试网格拓扑
-    grid = generate_graph_by_model('grid', 3, 2)  # 2行3列
+    grid = generate_graph_by_model('grid', 6)  # 2行3列
     assert grid.number_of_nodes() == 6
     assert isinstance(grid, nx.Graph)
 

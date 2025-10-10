@@ -235,7 +235,7 @@ class QuantumCircuitDataset(Dataset):
                         sample_count += 1
 
                     except qiskit.transpiler.exceptions.TranspilerError as e:
-                        print(f"\n样本生成失败（b{base_idx}_t{topo_idx}_p{param_idx}）：{str(e)[:80]}")
+                        print(f"\n样本生成失败（b{base_idx}_t{topo_idx}_p{param_idx}）：{e}")
                         continue
 
         print(f"\n=== 数据集生成完成 ===")

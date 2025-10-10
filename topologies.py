@@ -10,32 +10,55 @@ def closest_factors(num):
             factors.append((i, num // i))
     return factors[-1] if factors else (1, num)
 
-def generate_jellyfish_network(N, d):
-    """生成随机水母网络（修复节点度数超限问题）"""
-    g = nx.Graph()
-    g.add_nodes_from(range(N))
-    for node in range(N):
-        # 当前节点已达最大度数，跳过
-        if g.degree(node) >= d:
-            continue
-        # 可选邻居：不是自己、未连接且目标节点度数未达上限
-        possible_neighbors = [
-            n for n in range(N)
-            if n != node
-            and not g.has_edge(node, n)
-            and g.degree(n) < d  # 新增：确保邻居节点度数不超标
-        ]
-        # 最多可添加的邻居数（不超过自身剩余额度）
-        max_add = d - g.degree(node)
-        if max_add <= 0 or not possible_neighbors:
-            continue
-        # 随机选择邻居并添加边
-        num_to_add = min(max_add, len(possible_neighbors))
-        neighbors = random.sample(possible_neighbors, num_to_add)
-        g.add_edges_from([(node, n) for n in neighbors])
-    return g
 
-def generate_graph_by_model(graph_model: str, n: int, m_or_d: int = None, verbose=False):
+def create_jellyfish_graph(n, tentacle_lengths=None):
+    """
+    创建水母图
+
+    参数:
+    n: 总节点数
+    tentacle_lengths: 触手长度列表，如果不指定则自动分配
+    """
+    G = nx.Graph()
+
+    # 添加中心节点
+    G.add_node(0)
+
+    # 计算可用节点数（减去中心节点）
+    available_nodes = n - 1
+
+    # 如果没有指定触手长度，自动分配
+    if tentacle_lengths is None:
+        # 尽量创建多个触手，每个触手长度适中
+        num_tentacles = min(available_nodes, max(2, available_nodes // 3))
+        base_length = available_nodes // num_tentacles
+        remainder = available_nodes % num_tentacles
+
+        tentacle_lengths = [base_length] * num_tentacles
+        for i in range(remainder):
+            tentacle_lengths[i] += 1
+    else:
+        # 确保触手长度总和不超过可用节点数
+        if sum(tentacle_lengths) > available_nodes:
+            raise ValueError("触手长度总和超过了可用节点数")
+
+    # 构建触手
+    current_node = 1
+    for i, length in enumerate(tentacle_lengths):
+        if length > 0:
+            # 连接中心节点到触手的第一个节点
+            G.add_edge(0, current_node)
+
+            # 构建触手的链式结构
+            for j in range(1, length):
+                G.add_edge(current_node + j - 1, current_node + j)
+
+            current_node += length
+
+    return G
+
+
+def generate_graph_by_model(graph_model: str, n: int):
     """生成指定类型的图，新增ring拓扑支持"""
     def generate():
         if graph_model == 'linear':
@@ -46,12 +69,13 @@ def generate_graph_by_model(graph_model: str, n: int, m_or_d: int = None, verbos
             return nx.star_graph(n-1)
         if graph_model == 'grid':
             # 网格拓扑：m行n列，总节点数m*n
-            g = nx.grid_2d_graph(m=m_or_d, n=n)
+            n_, m = closest_factors(n)
+            g = nx.grid_2d_graph(m=m, n=n_)
             node_mapping = {node: idx for idx, node in enumerate(g.nodes)}
             return nx.relabel_nodes(g, node_mapping)
         if graph_model == 'random':
             # 随机拓扑：n个节点，平均度数m_or_d
-            return generate_jellyfish_network(N=n, d=m_or_d)
+            return create_jellyfish_graph(n)
         if graph_model == 'ring':
             # 环形拓扑：0-1-2-...-(n-1)-0（共n个节点，首尾相连）
             return nx.cycle_graph(n=n)  # 新增环形拓扑，使用networkx的cycle_graph
@@ -59,34 +83,15 @@ def generate_graph_by_model(graph_model: str, n: int, m_or_d: int = None, verbos
         raise ValueError(f'不支持的图模型: {graph_model}')
 
     g = generate()
-    if verbose:
-        print(f'生成 {graph_model} 图，节点数: {g.number_of_nodes()}')
-        nx.draw(g)
+    assert nx.is_connected(g), "Must be connected graph!!"
+
     return g
 
 def generate_coupling_map(graph_model: str, num_qubits: int):
     """生成指定类型的耦合图，支持ring拓扑"""
     assert num_qubits > 0, f"量子比特数必须为正数，实际为 {num_qubits}"
 
-    def gen():
-        if graph_model in ('linear', 'star', 'ring'):  # 新增ring支持
-            # 线性/星型/环形拓扑：直接生成num_qubits个节点
-            return generate_graph_by_model(graph_model, n=num_qubits)
-        if graph_model == 'random':
-            # 随机拓扑：指定节点数和度数
-            return generate_graph_by_model(
-                graph_model,
-                n=num_qubits,
-                m_or_d=random.randint(2, min(4, num_qubits-1))  # 限制度数范围
-            )
-        if graph_model == 'grid':
-            # 网格拓扑：因子分解为最接近的两个数
-            n, m = closest_factors(num_qubits)
-            return generate_graph_by_model(graph_model, n=n, m_or_d=m)
-
-        raise ValueError(f'不支持的拓扑类型: {graph_model}')
-
-    g = gen()
+    g = generate_graph_by_model(graph_model, num_qubits)
     # 验证节点数是否与预期一致
     assert g.number_of_nodes() == num_qubits, \
         f"拓扑 {graph_model} 生成失败：预期 {num_qubits} 个节点，实际 {g.number_of_nodes()} 个"
