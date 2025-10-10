@@ -24,7 +24,7 @@ from utils import GATE_CLS_MAP
 
 
 # -------------------------- 全局映射字典（字符串转整数） --------------------------
-TOPO_TYPE_MAP = {"linear": 0, "star": 1, "grid": 2, "ring": 3}
+TOPO_TYPE_MAP = {"linear": 0, "star": 1, "grid": 2, "ring": 3, 'random': 4}
 LAYOUT_METHOD_MAP = {"trivial": 0, "dense": 1, "sabre": 2}
 ROUTING_METHOD_MAP = {"basic": 0, "lookahead": 1, "sabre": 2}
 
@@ -45,7 +45,8 @@ class QuantumCircuitDataset(Dataset):
         # 初始化参数与验证
         self.topo_types = topo_types if topo_types is not None else ["linear", "star", "grid", "ring"]
         self._validate_topo_types()
-        self.basic_gates = basic_gates if basic_gates is not None else ['h', 'x', 'cx', 'swap', 'z']
+        self.basic_gates = basic_gates if basic_gates is not None else list(GATE_CLS_MAP.keys())
+
         self.base_num_samples = base_num_samples
         self.num_qubits = num_qubits
         self.max_depth = max_depth
@@ -133,7 +134,7 @@ class QuantumCircuitDataset(Dataset):
         return qc
 
     def _dag_to_pyg_data(self, dag: DAGCircuit):
-        return dag_to_pyg_data(dag, self.num_qubits, self.basic_gates + ['u'])
+        return dag_to_pyg_data(dag, self.num_qubits, self.basic_gates)
 
     def _generate_all_samples(self) -> None:
         """生成所有样本（含量子态、优化指标、原信息）"""
@@ -170,7 +171,7 @@ class QuantumCircuitDataset(Dataset):
                             layout_method=param["layout_method"],
                             routing_method=param["routing_method"],
                             optimization_level=param["optimization_level"],
-                            basis_gates=self.basic_gates + ['u'],  # 补充参数门避免 transpile 报错
+                            basis_gates=self.basic_gates,
                             seed_transpiler=base_idx + topo_idx + param_idx + self.seed # 固定随机种子确保可复现
                         )
 

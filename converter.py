@@ -107,8 +107,8 @@ def data_to_quantum_circuit(data: Data,
         # 门类型（独热编码取最大值索引）
         gate_idx = feat[:num_gate_types].argmax()
         gate_name = gate_types[gate_idx]
-        # 作用比特（掩码中值为1的索引）
-        qubits = [i for i in range(num_qubits) if feat[num_gate_types + i] == 1.0]
+        # 作用比特（掩码中值为1的索引）因为比特特征在后面，所以负数索引。
+        qubits = [i for i in range(num_qubits) if feat[-i - 1] == 1.0]
         gates.append((gate_name, qubits))
 
     # 2. 确定门的执行顺序（使用NetworkX拓扑排序）
@@ -122,9 +122,7 @@ def data_to_quantum_circuit(data: Data,
             gate_order = list(nx.topological_sort(nx_graph))
         except nx.NetworkXUnfeasible:
             # 若图有环（理论上DAG不应有环），退化为节点顺序
-            print("警告：图中存在环，使用节点顺序作为门顺序")
-            raise
-            # gate_order = list(range(len(gates)))
+            raise ValueError("警告：图中存在环，使用节点顺序作为门顺序")
     else:
         # 无边缘信息，默认按节点顺序添加
         gate_order = list(range(len(gates)))
@@ -140,6 +138,6 @@ def data_to_quantum_circuit(data: Data,
         elif len(qubits) == 2 and gate_name in ['cx', 'swap']:
             qc.append(gate, qubits)  # 注意：CX门顺序是(控制, 目标)
         else:
-            print(f"警告：不支持的门类型或比特数 {gate_name} {qubits}，已跳过")
+            raise ValueError(f"警告：不支持的门类型或比特数 {gate_name} {qubits}")
 
     return qc
