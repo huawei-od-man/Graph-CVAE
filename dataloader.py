@@ -14,6 +14,27 @@ from tqdm import trange
 from topologies import generate_coupling_map
 
 
+# 定义字符串到整数的映射字典
+TOPO_TYPE_MAP = {
+    "linear": 0,
+    "star": 1,
+    "grid": 2,
+    "ring": 3,
+    "random": 4,
+}
+
+LAYOUT_METHOD_MAP = {
+    "trivial": 0,
+    "dense": 1,
+    "sabre": 2
+}
+
+ROUTING_METHOD_MAP = {
+    "basic": 0,
+    "lookahead": 1,
+    "sabre": 2
+}
+
 def _get_qubit_index(q) -> int:
     """获取量子比特的索引，兼容不同Qiskit版本"""
     if hasattr(q, 'index'):
@@ -66,7 +87,7 @@ class QuantumCircuitDataset(Dataset):
 
     def _validate_topo_types(self) -> None:
         """验证拓扑类型是否被支持"""
-        supported_topo = ["linear", "star", "grid", "random"]  # 与generate_coupling_map对应
+        supported_topo = ["linear", "star", "grid", "random", "ring"]  # 与generate_coupling_map对应
         for topo in self.topo_types:
             if topo not in supported_topo:
                 raise ValueError(f"拓扑类型 {topo} 不支持，可选类型：{supported_topo}")
@@ -234,6 +255,7 @@ class QuantumCircuitDataset(Dataset):
         # 遍历：原始电路 → 拓扑 → 参数组合，生成所有样本
         sample_count = 0
         for base_idx in trange(self.base_num_samples, desc="原始电路进度"):
+
             # 生成1个原始电路（复用，对应多个拓扑和优化参数）
             qc = self._generate_random_circuit()
             qc_dag = self.circuit_to_dag(qc)
@@ -241,11 +263,17 @@ class QuantumCircuitDataset(Dataset):
 
             # 遍历所有拓扑
             for topo_idx, topo_type in enumerate(self.topo_types):
+                # 获取拓扑类型的整数编码
+                topo_type_code = TOPO_TYPE_MAP[topo_type]
                 coupling_map = self._get_coupling_map(topo_type)
                 topo_data = self._topology_to_data(coupling_map)  # 拓扑Data
 
                 # 遍历所有transpile参数组合，生成多个优化电路
                 for param_idx, param in enumerate(self.param_combinations):
+                    # 获取布局和路由方法的整数编码
+                    layout_code = LAYOUT_METHOD_MAP[param["layout_method"]]
+                    routing_code = ROUTING_METHOD_MAP[param["routing_method"]]
+
                     try:
                         # 调用transpile生成优化电路（使用字符串指定方法，Qiskit内部自动处理耦合图）
                         qco = transpile(
@@ -273,9 +301,9 @@ class QuantumCircuitDataset(Dataset):
                             "g_star": g_star_data,     # 目标：优化后电路
                             "meta": {                  # 元信息
                                 "base_idx": base_idx,
-                                "topo_type": topo_type,
-                                "layout_method": param["layout_method"],
-                                "routing_method": param["routing_method"],
+                                "topo_type": topo_type_code,
+                                "layout_method": layout_code,
+                                "routing_method": routing_code,
                                 "opt_level": param["optimization_level"]
                             }
                         }
@@ -314,8 +342,8 @@ class QuantumCircuitDataset(Dataset):
 def get_qc_gcvae_dataloader(
     batch_size: int = 32,
     base_num_samples: int = 200,
-    num_qubits: int = 4,
-    max_depth: int = 10,
+    num_qubits: int = 5,
+    max_depth: int = 100,
     topo_types: List[str] = None,
     basic_gates: List[str] = None,
     regenerate: bool = False,
@@ -343,7 +371,7 @@ def get_qc_gcvae_dataloader(
 # -------------------------- 测试代码 --------------------------
 if __name__ == "__main__":
     # 测试配置：3种拓扑，包含Sabre方法的参数组合
-    test_topo_types = ["linear", "star", "grid"]
+    test_topo_types = ["linear", "star", "grid", "ring", "random"]
     test_basic_gates = ['h', 'x', 'cx', 'swap', 'z']
 
     # 创建数据加载器（首次运行regenerate=True）
@@ -354,20 +382,20 @@ if __name__ == "__main__":
         max_depth=10,
         topo_types=test_topo_types,
         basic_gates=test_basic_gates,
-        regenerate=True
+        regenerate=True,
     )
 
     # 验证数据加载
     print(f"\n数据加载器批次数量：{len(dataloader)}")
     for batch_idx, batch in enumerate(dataloader):
         print(f"\n=== 批次 {batch_idx+1} 信息 ===")
-        print(f"优化前电路（g）：{len(batch['g'])}个图")
-        print(f"拓扑（t）：{len(batch['t'])}个图")
-        print(f"优化后电路（g_star）：{len(batch['g_star'])}个图")
+        print(f"优化前电路（g）：{batch['g'].num_graphs}个图")
+        print('batch', batch)
 
         # 打印首个样本的元信息（验证Sabre方法是否生效）
-        first_meta = batch['meta'][0]
-        print(f"首个样本参数：布局={first_meta['layout_method']}, 路由={first_meta['routing_method']}, 优化级别={first_meta['opt_level']}")
+        first_meta = batch['meta']
+        print(f"首个样本参数：布局={first_meta['layout_method'][0]},\
+               路由={first_meta['routing_method'][0]}, 优化级别={first_meta['opt_level'][0]}")
 
         if batch_idx >= 1:
             break  # 仅测试2个批次
