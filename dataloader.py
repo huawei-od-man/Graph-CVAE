@@ -11,6 +11,7 @@ from qiskit.converters import circuit_to_dag
 # 导入支持的门类
 from qiskit.circuit.library import HGate, XGate, CXGate, SwapGate, ZGate, TGate, SGate
 from tqdm import trange
+from topologies import generate_graph_for_num_qubits
 
 
 def _get_qubit_index(q) -> int:
@@ -137,16 +138,7 @@ class QuantumCircuitDataset(Dataset):
 
     def _generate_coupling_map(self) -> CouplingMap:
         """生成物理拓扑对应的耦合图"""
-        if self.topo_type == "linear":
-            edges = [(i, i+1) for i in range(self.num_qubits - 1)]
-            edges += [(i+1, i) for i in range(self.num_qubits - 1)]
-        elif self.topo_type == "star":
-            edges = [(0, i) for i in range(1, self.num_qubits)]
-            edges += [(i, 0) for i in range(1, self.num_qubits)]
-        else:
-            raise ValueError(f"不支持的拓扑类型: {self.topo_type}")
-
-        return CouplingMap(edges)
+        return generate_graph_for_num_qubits(self.topo_type, self.num_qubits)
 
     def _generate_random_circuit(self) -> QuantumCircuit:
         """生成随机量子电路作为原始电路qc，使用指定的门类型"""
@@ -339,14 +331,14 @@ if __name__ == "__main__":
     # 示例1: 使用默认门集 ['h', 'x', 'cx', 'swap']
     dataloader = get_qc_gcvae_dataloader(
         batch_size=8,
-        num_samples=1000,
-        num_qubits=20,
-        max_depth=1000,
-        topo_type="linear",
+        num_samples=10,
+        num_qubits=4,
+        max_depth=10,
+        topo_type="grid",
         regenerate=True
     )
     print(dataloader)
-    
+
     # 测试加载一个批次
     for batch in dataloader:
         print("批次数据结构:")
