@@ -15,6 +15,7 @@ import math
 import itertools
 import sys
 from topologies import generate_coupling_map
+from utils import SUPPORTED_GRAPH_MODEL, SUPPORTED_LAYOUT_METHOD, SUPPORTED_OPT_LEVEL, SUPPORTED_ROUTING_METHOD
 
 
 @dataclass

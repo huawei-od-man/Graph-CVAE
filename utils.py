@@ -6,6 +6,13 @@ GATE_CLS_MAP = {
     'cx': CXGate, 'swap': SwapGate
 }
 
+
+SUPPORTED_LAYOUT_METHOD = ('trivial', 'dense', 'sabre')
+SUPPORTED_ROUTING_METHOD = ('basic', 'sabre')  # lookahead
+SUPPORTED_GRAPH_MODEL = ('linear', 'star', 'grid', 'random')
+SUPPORTED_OPT_LEVEL = tuple(range(3)) # Exclude 3 (too slow)
+
+
 # -------------------------- 辅助函数：量子比特索引获取（兼容Qiskit版本） --------------------------
 def get_qubit_index(q) -> int:
     """安全获取量子比特的整数索引"""
