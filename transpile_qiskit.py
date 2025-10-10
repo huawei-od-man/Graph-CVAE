@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import math
 import itertools
 import sys
-from topologies import generate_graph_for_num_qubits
+from topologies import generate_coupling_map
 
 
 @dataclass
@@ -65,11 +65,6 @@ class TranspileStats:
         self.__dict__.update(transpile_param)
 
 
-SUPPORTED_LAYOUT_METHOD = ('trivial', 'dense', 'sabre')
-SUPPORTED_ROUTING_METHOD = ('basic', 'sabre')  # lookahead
-SUPPORTED_GRAPH_MODEL = ('line', 'star', 'grid', 'random')
-SUPPORTED_OPT_LEVEL = tuple(range(4))
-
 
 def transpile_circuit_on_random_topology(circuit_path: Path,
                                          gate_set,
@@ -106,7 +101,7 @@ def transpile_circuit_on_random_topology(circuit_path: Path,
     else:
         raise ValueError(opt_method)
 
-    coupling_map = generate_graph_for_num_qubits(graph_model, num_qubits=qc_before.num_qubits)
+    coupling_map = generate_coupling_map(graph_model, num_qubits=qc_before.num_qubits)
 
     if verbose:
         print(f'circuit {qc_before.name} optimization_level={optimization_level} layout_method={layout_method} routing_method={routing_method}')

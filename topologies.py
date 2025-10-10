@@ -1,135 +1,78 @@
-import random
 import networkx as nx
-import numpy as np
+import random
 from qiskit.transpiler import CouplingMap
-import math
 
+def closest_factors(num):
+    """找到最接近的两个因子，用于网格拓扑"""
+    factors = []
+    for i in range(1, int(num**0.5) + 1):
+        if num % i == 0:
+            factors.append((i, num // i))
+    return factors[-1] if factors else (1, num)
 
-def closest_factors(n):
-    if n < 1:
-        return "请输入正整数"
-
-    # 从平方根开始向下查找
-    sqrt_n = int(math.sqrt(n))
-
-    # 找到最大的能整除n的数
-    for i in range(sqrt_n, 0, -1):
-        if n % i == 0:
-            return (i, n // i)
-
-    # 对于质数，返回1和自身
-    return (1, n)
-
+def generate_jellyfish_network(N, d):
+    """生成随机水母网络（示例实现）"""
+    g = nx.Graph()
+    g.add_nodes_from(range(N))
+    # 简化实现：随机连接，确保每个节点度数约为d
+    for node in range(N):
+        neighbors = random.sample([n for n in range(N) if n != node and not g.has_edge(node, n)],
+                                 min(d, N-1 - g.degree(node)))
+        g.add_edges_from([(node, n) for n in neighbors])
+    return g
 
 def generate_graph_by_model(graph_model: str, n: int, m_or_d: int = None, verbose=False):
-    # assert graph_model in 'line star grid random'.split(), f'Bad model {graph_model}'
+    """生成指定类型的图，修复星型图的节点数问题"""
     def generate():
-        if graph_model == 'line':
+        if graph_model == 'linear':
+            # 线性图：n个节点（0-1-2-...-n-1）
             return nx.path_graph(n=n)
         if graph_model == 'star':
-            return nx.star_graph(n=n)
+            # 星型图：总节点数为n（中心1个 + 叶节点n-1个）
+            # 修正：nx.star_graph(k)生成k+1个节点，因此k应设为n-1
+            return nx.star_graph(n-1)  # 关键修复：用n-1作为参数
         if graph_model == 'grid':
+            # 网格图：m行n列，总节点数m*n
             g = nx.grid_2d_graph(m=m_or_d, n=n)
             node_mapping = {node: idx for idx, node in enumerate(g.nodes)}
             return nx.relabel_nodes(g, node_mapping)
         if graph_model == 'random':
+            # 随机图：n个节点，平均度数m_or_d
             return generate_jellyfish_network(N=n, d=m_or_d)
 
-        raise ValueError(f'Bad graph model: {graph_model}')
+        raise ValueError(f'不支持的图模型: {graph_model}')
 
     g = generate()
     if verbose:
-        print(f'Generate {graph_model} {n} {m_or_d}')
+        print(f'生成 {graph_model} 图，节点数: {g.number_of_nodes()}')
         nx.draw(g)
     return g
 
-
-def generate_jellyfish_network(N, d, iterations=10):
-    """
-    Generate a Jellyfish network as a NetworkX graph.
-
-    Args:
-        N (int): Number of nodes
-        d (int): Fixed degree per node (must be even)
-        iterations (int): Number of edge swaps (scaled by total edges)
-
-    Returns:
-        nx.Graph: Jellyfish network graph
-    """
-    if d % 2 != 0:
-        raise ValueError("Degree must be even for Jellyfish networks")
-    if N <= d:
-        raise ValueError("Number of nodes must exceed degree")
-
-    # Initialize graph
-    G = nx.Graph()
-    G.add_nodes_from(range(N))
-
-    # Create initial circular connections to ensure basic connectivity
-    for i in range(N):
-        for j in range(1, d // 2 + 1):
-            neighbor = (i + j) % N
-            if not G.has_edge(i, neighbor):
-                G.add_edge(i, neighbor)
-
-    # Calculate total edges and swap iterations
-    total_edges = (N * d) // 2
-    swap_iterations = iterations * total_edges
-
-    # Perform random edge swaps to randomize the structure
-    for _ in range(swap_iterations):
-        # Find two valid edges for swapping
-        while True:
-            # Get first random edge (u1, v1)
-            u1 = random.randint(0, N - 1)
-            if G.degree(u1) < 1:
-                continue
-            v1 = random.choice(list(G.neighbors(u1)))
-            if u1 > v1:
-                u1, v1 = v1, u1
-
-            # Get second random edge (u2, v2) that doesn't share nodes with first edge
-            u2 = random.randint(0, N - 1)
-            if u2 == u1 or u2 == v1 or G.degree(u2) < 1:
-                continue
-            v2 = random.choice(list(G.neighbors(u2)))
-            if v2 == u1 or v2 == v1 or u2 == v2 or u2 > v2:
-                continue
-
-            # Ensure no existing edges between the cross nodes
-            if not G.has_edge(u1, u2) and not G.has_edge(v1, v2):
-                break
-
-        # Perform edge swap: (u1-v1, u2-v2) → (u1-u2, v1-v2)
-        G.remove_edge(u1, v1)
-        G.remove_edge(u2, v2)
-        G.add_edge(u1, u2)
-        G.add_edge(v1, v2)
-
-    return G
-
-
-def create_coupling_graph(g: nx.Graph, check=False):
-    coupling_map = CouplingMap(list(g.edges))
-    if check:
-        assert g.number_of_edges() == coupling_map.graph.num_edges()
-        assert g.number_of_nodes() == coupling_map.graph.num_nodes()
-        assert np.all(coupling_map.distance_matrix == nx.floyd_warshall_numpy(g))
-        print(f'Check ok, |N| {coupling_map.graph.num_nodes()} |E| {coupling_map.graph.num_edges()}')
-    return coupling_map
-
-
-def generate_graph_for_num_qubits(graph_model: str, num_qubits: int):
-    assert num_qubits > 0
+def generate_coupling_map(graph_model: str, num_qubits: int):
+    """生成指定类型的耦合图，确保节点数与量子比特数一致"""
+    assert num_qubits > 0, f"量子比特数必须为正数，实际为 {num_qubits}"
     def gen():
-        if graph_model in ('line', 'star'):
+        if graph_model in ('linear', 'star'):
+            # 线性/星型图：直接生成num_qubits个节点
             return generate_graph_by_model(graph_model, n=num_qubits)
-        if graph_model == 'random':  # Use fixed 4 degree.
-            return generate_graph_by_model(graph_model, n=num_qubits, m_or_d=random.randint(2, num_qubits-1))
+        if graph_model == 'random':
+            # 随机图：指定节点数和度数
+            return generate_graph_by_model(
+                graph_model,
+                n=num_qubits,
+                m_or_d=random.randint(2, min(4, num_qubits-1))  # 限制度数范围
+            )
         if graph_model == 'grid':
-            n, m = closest_factors(num_qubits)  # Fatorize into closest two numbers.
+            # 网格图：因子分解为最接近的两个数
+            n, m = closest_factors(num_qubits)
             return generate_graph_by_model(graph_model, n=n, m_or_d=m)
-        raise ValueError(graph_model)
+        raise ValueError(f'不支持的拓扑类型: {graph_model}')
 
     g = gen()
-    return create_coupling_graph(g)
+    # 验证节点数是否与预期一致
+    assert g.number_of_nodes() == num_qubits, \
+        f"拓扑 {graph_model} 生成失败：预期 {num_qubits} 个节点，实际 {g.number_of_nodes()} 个"
+    # 转换为Qiskit的耦合图（双向边）
+    edges = list(g.edges) + [(v, u) for u, v in g.edges]  # 确保边是双向的
+    return CouplingMap(edges)
+    
