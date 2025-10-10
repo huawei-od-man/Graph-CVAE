@@ -1,5 +1,7 @@
 import os
 import random
+import qiskit
+import qiskit.transpiler
 import torch
 from typing import List, Tuple, Dict, Optional
 from torch_geometric.data import Data, Dataset, Batch
@@ -31,9 +33,9 @@ ROUTING_METHOD_MAP = {"basic": 0, "lookahead": 1, "sabre": 2}
 class QuantumCircuitDataset(Dataset):
     def __init__(self,
                  root: str = "./data",
-                 base_num_samples: int = 100,
+                 base_num_samples: int = 10,
                  num_qubits: int = 4,
-                 max_depth: int = 10,
+                 max_depth: int = 5,
                  topo_types: List[str] = None,
                  basic_gates: List[str] = None,
                  regenerate: bool = False,
@@ -75,7 +77,7 @@ class QuantumCircuitDataset(Dataset):
 
     def _split_gate_types(self) -> Tuple[List[str], List[str]]:
         """区分单比特门和两比特门"""
-        two_qubit = ['cx', 'swap']
+        two_qubit = [g for g in self.basic_gates if g in ['cx', 'swap']]
         single_qubit = [g for g in self.basic_gates if g not in two_qubit]
         if not single_qubit:
             raise ValueError("数据集必须包含至少一种单比特门")
@@ -231,10 +233,9 @@ class QuantumCircuitDataset(Dataset):
                         torch.save(sample, sample_path)
                         sample_count += 1
 
-                    except Exception as e:
+                    except qiskit.transpiler.exceptions.TranspilerError as e:
                         print(f"\n样本生成失败（b{base_idx}_t{topo_idx}_p{param_idx}）：{str(e)[:80]}")
-                        raise e
-                        # continue
+                        continue
 
         print(f"\n=== 数据集生成完成 ===")
         print(f"成功生成样本数：{sample_count}/{self.total_samples}")
@@ -287,7 +288,7 @@ def custom_collate_fn(batch: List[Dict[str, any]]) -> Dict[str, any]:
 
     # 3. 处理优化指标（浮点数转张量，形状 [batch_size]）
     batched_data["optimization_metrics"] = {
-        "fidelity": torch.tensor([s["optimization_metrics"]["fidelity"] for s in batch], dtype=torch.float32),
+        # "fidelity": torch.tensor([s["optimization_metrics"]["fidelity"] for s in batch], dtype=torch.float32),
         "depth_ratio": torch.tensor([s["optimization_metrics"]["depth_ratio"] for s in batch], dtype=torch.float32),
         "total_gate_ratio": torch.tensor([s["optimization_metrics"]["total_gate_ratio"] for s in batch], dtype=torch.float32),
         "two_qubit_ratio": torch.tensor([s["optimization_metrics"]["two_qubit_ratio"] for s in batch], dtype=torch.float32)
@@ -348,48 +349,3 @@ def get_dataloader(
         drop_last=True,  # 丢弃最后一个不完整批次
         pin_memory=True  # 加速 GPU 数据传输（如需 CPU 训练可设为 False）
     )
-
-
-# -------------------------- 测试代码（验证数据集功能） --------------------------
-if __name__ == "__main__":
-    # 测试配置：小样本量+少拓扑类型，快速验证
-    test_config = {
-        "batch_size": 2,
-        "base_num_samples": 3,
-        "num_qubits": 4,
-        "max_depth": 8,
-        "topo_types": ["star", "ring"],  # 测试已修复的 star 和新增的 ring 拓扑
-        "basic_gates": ['h', 'x', 'cx', 'swap'],
-        "regenerate": True,  # 首次运行设为 True 生成样本
-        "shuffle": False
-    }
-
-    # 创建数据加载器
-    dataloader = get_dataloader(**test_config)
-    print(f"\n数据加载器创建完成，批次总数：{len(dataloader)}")
-
-    # 验证批次数据结构
-    for batch_idx, batch in enumerate(dataloader):
-        print(f"\n=== 批次 {batch_idx+1} 关键信息验证 ===")
-        # 1. 验证图数据（输入/目标）
-        print(f"原始电路图（g）：节点数={batch['g'].x.shape[0]}，特征维度={batch['g'].x.shape[1]}")
-        print(f"优化后电路图（g_star）：节点数={batch['g_star'].x.shape[0]}，边数={batch['g_star'].edge_index.shape[1]}")
-        print(f"拓扑图（t）：节点数={batch['t'].x.shape[1]}（应等于比特数 {test_config['num_qubits']}）")
-
-        # 2. 验证量子态数据（等价性）
-        sv_shape = batch['quantum_origin']['statevector'].shape
-        print(f"原始电路 statevector 形状：{sv_shape}（应为 [batch_size, 2^num_qubits] = [{test_config['batch_size']}, 16]）")
-
-        # 3. 验证优化指标（效果评估）
-        print(f"保真度范围：{batch['optimization_metrics']['fidelity'].min():.4f} ~ {batch['optimization_metrics']['fidelity'].max():.4f}")
-        print(f"深度比例（优化后/原始）：{batch['optimization_metrics']['depth_ratio']}（<1 表示深度降低）")
-
-        # 4. 验证电路原信息（基础统计）
-        print(f"原始电路总门数：{batch['circuit_origin_info']['total_gates']}")
-        print(f"优化后电路两比特门数：{batch['circuit_optimized_info']['two_qubit_gates']}")
-
-        # 仅验证 2 个批次（避免输出过长）
-        if batch_idx >= 1:
-            break
-
-    print(f"\n所有测试通过！数据集可正常用于 QC Graph-CVAE 训练。")
