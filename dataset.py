@@ -133,7 +133,7 @@ class QuantumCircuitDataset(Dataset):
         return qc
 
     def _dag_to_pyg_data(self, dag: DAGCircuit):
-        return dag_to_pyg_data(dag, self.num_qubits, self.basic_gates)
+        return dag_to_pyg_data(dag, self.num_qubits, self.basic_gates + ['u'])
 
     def _generate_all_samples(self) -> None:
         """生成所有样本（含量子态、优化指标、原信息）"""

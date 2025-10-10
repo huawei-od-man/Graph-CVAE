@@ -1,7 +1,7 @@
 """
 Convert circuit to graph (PyG's Data) and vice versus.
 """
-
+from typing import List
 from torch_geometric.data import Data
 from torch_geometric.utils import to_networkx
 import networkx as nx
@@ -17,17 +17,22 @@ def dag_to_pyg_data(dag: DAGCircuit,
                     num_qubits: int,
                     basic_gates: list
                     ) -> Data:
-    """将Qiskit DAG转换为PyG的Data对象（节点特征：门类型+比特掩码）"""
+    """将Qiskit DAG转换为PyG的Data对象（修复节点过滤导致的索引问题）"""
     gate_type_map = {g: i for i, g in enumerate(basic_gates)}
-    op_nodes = [node for node in dag.nodes() if isinstance(node, DAGOpNode)]
-    node_features = []
+    # 仅保留支持的操作门节点（DAGOpNode且门类型在basic_gates中）
+    op_nodes: List['DAGOpNode'] = []
+    for node in dag.nodes():
+        if isinstance(node, DAGOpNode):
+            gate_name = node.op.name.lower()
+            if gate_name in gate_type_map:
+                op_nodes.append(node)  # 仅保留有效操作门节点
+            else:
+                raise ValueError(f'Unsupported gate: {gate_name}')
 
     # 构建节点特征（门类型独热编码 + 比特掩码）
+    node_features = []
     for node in op_nodes:
         gate_name = node.op.name.lower()
-        if gate_name not in gate_type_map:
-            continue  # 跳过不支持的门（如测量门）
-
         # 门类型特征（独热编码）
         gate_feat = torch.zeros(len(basic_gates))
         gate_feat[gate_type_map[gate_name]] = 1.0
@@ -38,28 +43,40 @@ def dag_to_pyg_data(dag: DAGCircuit,
             q_idx = get_qubit_index(q)
             if 0 <= q_idx < num_qubits:  # 过滤无效索引
                 qubit_feat[q_idx] = 1.0
+            else:
+                raise ValueError(f'Qubit index out of range: {q_idx}, {num_qubits}')
 
         node_features.append(torch.cat([gate_feat, qubit_feat]))
 
-    # 构建边索引（DAG的依赖关系）
+    # 构建边索引（仅保留有效操作门节点之间的依赖）
     edge_index = []
-    node_idx_map = {node: i for i, node in enumerate(op_nodes)}
+    node_idx_map = {node: i for i, node in enumerate(op_nodes)}  # 仅映射有效节点
     for i, node in enumerate(op_nodes):
+        # 遍历当前节点的所有前驱节点
         for pred_node in dag.predecessors(node):
-            if pred_node in node_idx_map:
+            # 仅保留前驱节点也是有效操作门节点的边
+            if isinstance(pred_node, DAGOpNode) and pred_node in node_idx_map:
                 edge_index.append([node_idx_map[pred_node], i])
 
     # 处理空电路情况
     if not node_features:
+        print('Warning: this circuit is empty.')
         return Data(
             x=torch.empty((0, len(basic_gates) + num_qubits)),
             edge_index=torch.empty((2, 0), dtype=torch.long)
         )
 
+    # 验证边索引的有效性（确保所有索引都在节点范围内）
+    max_node_idx = len(op_nodes) - 1
+    for src, dst in edge_index:
+        if src < 0 or src > max_node_idx or dst < 0 or dst > max_node_idx:
+            raise ValueError(f"无效的边索引 ({src}, {dst})，节点总数为 {len(op_nodes)}")
+
     return Data(
         x=torch.stack(node_features),
         edge_index=torch.tensor(edge_index, dtype=torch.long).t().contiguous()
     )
+
 
 def data_to_quantum_circuit(data: Data,
                             num_qubits: int,
@@ -97,7 +114,9 @@ def data_to_quantum_circuit(data: Data,
     # 2. 确定门的执行顺序（使用NetworkX拓扑排序）
     if data.edge_index is not None and data.edge_index.numel() > 0:
         # 转换为NetworkX有向图（保持节点索引一致）
-        nx_graph = to_networkx(data, to_undirected=False)  # 必须为有向图
+        nx_graph = to_networkx(data, node_attrs=['x'], to_undirected=False, remove_self_loops=True)  # 必须为有向图
+        assert nx_graph.number_of_nodes() == data.num_nodes, (nx_graph.number_of_nodes(), data.num_nodes)
+
         # 拓扑排序（返回节点索引的执行顺序）
         try:
             gate_order = list(nx.topological_sort(nx_graph))
@@ -110,6 +129,7 @@ def data_to_quantum_circuit(data: Data,
         # 无边缘信息，默认按节点顺序添加
         gate_order = list(range(len(gates)))
 
+    assert len(gate_order) == len(gates), (len(gate_order), len(gates))
     # 3. 按顺序添加门到电路
     for node_idx in gate_order:
         gate_name, qubits = gates[node_idx]

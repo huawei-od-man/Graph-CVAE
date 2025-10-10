@@ -52,6 +52,9 @@ def test_dag_to_pyg_data_common(basic_config):
     # 4. 验证依赖边（至少包含 H→CX、X→CX、CX→SWAP 的边）
     assert data.edge_index.shape[1] >= 3, f"边数不足，预期≥3，实际{data.edge_index.shape[1]}"
 
+    # 5. 验证edge_index的合法性：所有结点都在范围内。
+    assert all(0 <= v < data.num_nodes for v in data.edge_index.reshape(-1))
+
 
 # -------------------------- 测试 data_to_quantum_circuit --------------------------
 def test_data_to_quantum_circuit_common(basic_config):
@@ -83,3 +86,70 @@ def test_data_to_quantum_circuit_common(basic_config):
     assert [get_qubit_index(qb) for qb in qc_restored.data[2][1]] == [0,1], "CX门比特错误"
     # SWAP门（第3个门）：作用于(0,1)
     assert [get_qubit_index(qb) for qb in qc_restored.data[3][1]] == [0,1], "SWAP门比特错误"
+
+
+def test_dag_to_pyg_data_empty_circuit():
+    """测试空电路转换，确保节点和边为空"""
+    qc = QuantumCircuit(2)  # 空电路
+    dag = circuit_to_dag(qc)
+    data = dag_to_pyg_data(dag, 2, ['h', 'cx'])
+
+    assert data.num_nodes == 0, "空电路应包含0个节点"
+    assert data.edge_index.numel() == 0, "空电路应包含0条边"
+
+
+
+def test_dag_to_pyg_data_with_unsupported_gate():
+    """测试遇到不支持的门时是否直接报错"""
+    # 创建包含不支持门（rz）的电路
+    qc = QuantumCircuit(2)
+    qc.h(0)          # 支持的门
+    qc.rz(0.5, 0)    # 不支持的门
+    qc.cx(0, 1)      # 支持的门
+    dag = circuit_to_dag(qc)
+
+    # 定义仅支持h、cx、s的基础门列表
+    basic_gates = ['h', 'cx', 's']
+
+    # 预期会抛出ValueError，提示不支持rz门
+    with pytest.raises(ValueError) as excinfo:
+        dag_to_pyg_data(dag, num_qubits=2, basic_gates=basic_gates)
+
+    # 验证错误信息是否包含关键内容
+    assert "rz" in str(excinfo.value)
+
+
+def test_dag_to_pyg_data_all_supported_gates():
+    """测试所有门都支持的情况，确保正常转换"""
+    qc = QuantumCircuit(2)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.s(1)
+    dag = circuit_to_dag(qc)
+
+    basic_gates = ['h', 'cx', 's']
+    data = dag_to_pyg_data(dag, 2, basic_gates)
+
+    # 验证节点数量（3个支持的门）
+    assert data.num_nodes == 3
+    # 验证边索引不为空（存在依赖关系）
+    assert data.edge_index.numel() > 0
+
+
+def test_converter_stressed(tmp_path):
+    from dataset import QuantumCircuitDataset
+
+    dataset = QuantumCircuitDataset(
+        tmp_path,
+        base_num_samples=1,
+        num_qubits=10,
+        max_depth=100,
+        regenerate=True,
+        topo_types=['grid']
+    )
+    for i in range(dataset.total_samples):
+        sample = dataset.get(i)
+        data_to_quantum_circuit(sample['g'], dataset.num_qubits, dataset.basic_gates)
+        data_to_quantum_circuit(sample['g_star'], dataset.num_qubits, dataset.basic_gates)
+        # Should not raise any exception.
+        
