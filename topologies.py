@@ -11,14 +11,27 @@ def closest_factors(num):
     return factors[-1] if factors else (1, num)
 
 def generate_jellyfish_network(N, d):
-    """生成随机水母网络"""
+    """生成随机水母网络（修复节点度数超限问题）"""
     g = nx.Graph()
     g.add_nodes_from(range(N))
     for node in range(N):
-        neighbors = random.sample(
-            [n for n in range(N) if n != node and not g.has_edge(node, n)],
-            min(d, N-1 - g.degree(node))
-        )
+        # 当前节点已达最大度数，跳过
+        if g.degree(node) >= d:
+            continue
+        # 可选邻居：不是自己、未连接且目标节点度数未达上限
+        possible_neighbors = [
+            n for n in range(N)
+            if n != node
+            and not g.has_edge(node, n)
+            and g.degree(n) < d  # 新增：确保邻居节点度数不超标
+        ]
+        # 最多可添加的邻居数（不超过自身剩余额度）
+        max_add = d - g.degree(node)
+        if max_add <= 0 or not possible_neighbors:
+            continue
+        # 随机选择邻居并添加边
+        num_to_add = min(max_add, len(possible_neighbors))
+        neighbors = random.sample(possible_neighbors, num_to_add)
         g.add_edges_from([(node, n) for n in neighbors])
     return g
 
@@ -81,4 +94,3 @@ def generate_coupling_map(graph_model: str, num_qubits: int):
     # 转换为Qiskit的耦合图（双向边）
     edges = list(g.edges) + [(v, u) for u, v in g.edges]  # 确保边是双向的
     return CouplingMap(edges)
-    
