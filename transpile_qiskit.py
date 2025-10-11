@@ -66,7 +66,6 @@ class TranspileStats:
         self.__dict__.update(transpile_param)
 
 
-
 def transpile_circuit_on_random_topology(circuit_path: Path,
                                          gate_set,
                                          graph_model: str,
@@ -97,7 +96,7 @@ def transpile_circuit_on_random_topology(circuit_path: Path,
     elif opt_method == 'quarl':
         assert ecc_file and gate_set and max_iterations
         qc_opt = quarl_optimize(circuit_path, gate_set, ecc_file, max_iterations=max_iterations,
-                                 verbose=verbose)
+                                verbose=verbose)
         qc_before = CircuitStats(qc_opt, name=circuit_path.stem)
     else:
         raise ValueError(opt_method)
@@ -105,7 +104,8 @@ def transpile_circuit_on_random_topology(circuit_path: Path,
     coupling_map = generate_coupling_map(graph_model, num_qubits=qc_before.num_qubits)
 
     if verbose:
-        print(f'circuit {qc_before.name} optimization_level={optimization_level} layout_method={layout_method} routing_method={routing_method}')
+        print(
+            f'circuit {qc_before.name} optimization_level={optimization_level} layout_method={layout_method} routing_method={routing_method}')
 
     qc_after = transpile(qc_before.qc,
                          basis_gates=gate_set,
@@ -157,9 +157,8 @@ def make_rounds(circuit_dir: Path, opt_methods: list, repeats=3, verbose=False):
 
 
 def quarl_optimize(qc_path: Path, gate_set, ecc_file,
-                   max_iterations = 50,
+                   max_iterations=50,
                    verbose=True) -> QuantumCircuit:
-
     gate_set_arg = '[' + ",".join(gate_set) + ']'
     best_graph_output_dir = Path(f'./best_graph/{time.time()}').absolute()
     best_graph_output_dir.mkdir(exist_ok=True, parents=True)
@@ -196,10 +195,10 @@ def quartz_optimize(qasm_file: Path, gate_set, ecc_file, verbose=True) -> Quantu
 
 
 def run_transpile_and_save_results(circuit_dir: Path, opt_methods: list,
-                                    save_file: Path,
-                                    gate_set, ecc_file,
-                                    n_jobs=-1,
-                                    verbose=True):
+                                   save_file: Path,
+                                   gate_set, ecc_file,
+                                   n_jobs=-1,
+                                   verbose=True):
     rounds = make_rounds(circuit_dir, opt_methods, verbose=verbose)
 
     results = Parallel(n_jobs=n_jobs, verbose=1)(delayed(transpile_circuit_on_random_topology)(

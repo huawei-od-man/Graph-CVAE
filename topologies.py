@@ -2,10 +2,11 @@ import networkx as nx
 import random
 from qiskit.transpiler import CouplingMap
 
+
 def closest_factors(num):
     """找到最接近的两个因子，用于网格拓扑"""
     factors = []
-    for i in range(1, int(num**0.5) + 1):
+    for i in range(1, int(num ** 0.5) + 1):
         if num % i == 0:
             factors.append((i, num // i))
     return factors[-1] if factors else (1, num)
@@ -60,13 +61,14 @@ def create_jellyfish_graph(n, tentacle_lengths=None):
 
 def generate_graph_by_model(graph_model: str, n: int):
     """生成指定类型的图，新增ring拓扑支持"""
+
     def generate():
         if graph_model == 'linear':
             # 线性拓扑：0-1-2-...-(n-1)
             return nx.path_graph(n=n)
         if graph_model == 'star':
             # 星型拓扑：中心0连接1,2,...,n-1（共n个节点）
-            return nx.star_graph(n-1)
+            return nx.star_graph(n - 1)
         if graph_model == 'grid':
             # 网格拓扑：m行n列，总节点数m*n
             n_, m = closest_factors(n)
@@ -86,6 +88,7 @@ def generate_graph_by_model(graph_model: str, n: int):
     assert nx.is_connected(g), "Must be connected graph!!"
 
     return g
+
 
 def generate_coupling_map(graph_model: str, num_qubits: int):
     """生成指定类型的耦合图，支持ring拓扑"""

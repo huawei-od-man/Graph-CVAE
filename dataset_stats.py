@@ -79,15 +79,16 @@ def extract_scalars_to_dataframe(dataset: QuantumCircuitDataset) -> pd.DataFrame
 
     return pd.DataFrame(data)
 
+
 # 使用示例
 if __name__ == "__main__":
     # 加载数据集（使用与生成时相同的参数）
     dataset = QuantumCircuitDataset(
         root="./data",
         base_num_samples=100,  # 与生成时一致
-        num_qubits=4,          # 与生成时一致
-        max_depth=10,          # 与生成时一致
-        regenerate=False       # 不重新生成，仅加载已有数据
+        num_qubits=4,  # 与生成时一致
+        max_depth=10,  # 与生成时一致
+        regenerate=False  # 不重新生成，仅加载已有数据
     )
 
     # 提取标量数据到DataFrame

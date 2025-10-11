@@ -37,7 +37,7 @@ def compute_quantum_equivalence_data(qc: QuantumCircuit) -> Dict[str, np.ndarray
 
     return {
         "statevector": sv.data,  # 形状 [2^n]，已归一化
-        "unitary": unitary       # 形状 [2^n, 2^n]
+        "unitary": unitary  # 形状 [2^n, 2^n]
     }
 
 

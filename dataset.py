@@ -6,7 +6,11 @@ import torch
 from typing import List, Tuple, Dict, Optional
 from torch_geometric.data import Data, Dataset, Batch
 
+from joblib import Parallel, delayed
+import multiprocessing
+
 from converter import dag_to_pyg_data
+
 try:
     from torch_geometric.loader import DataLoader
 except:
@@ -21,7 +25,6 @@ from tqdm import trange
 from topologies import generate_coupling_map
 from circuit_info import extract_circuit_info, compute_optimization_metrics, compute_quantum_equivalence_data
 from utils import GATE_CLS_MAP
-
 
 # -------------------------- 全局映射字典（字符串转整数） --------------------------
 TOPO_TYPE_MAP = {"linear": 0, "star": 1, "grid": 2, "ring": 3, 'random': 4}
@@ -136,112 +139,112 @@ class QuantumCircuitDataset(Dataset):
     def _dag_to_pyg_data(self, dag: DAGCircuit):
         return dag_to_pyg_data(dag, self.num_qubits, self.basic_gates)
 
+    # 修改_generate_all_samples方法
     def _generate_all_samples(self) -> None:
-        """生成所有样本（含量子态、优化指标、原信息）"""
+        """生成所有样本（含量子态、优化指标、元信息）"""
         print(f"\n=== 开始生成数据集 ===")
         print(f"基础样本数：{self.base_num_samples} | 拓扑类型：{self.topo_types} | 总样本数：{self.total_samples}")
         print(f"比特数：{self.num_qubits} | 门类型：{self.basic_gates} | 最大电路深度：{self.max_depth}")
 
-        sample_count = 0
-        for base_idx in trange(self.base_num_samples, desc="原始电路生成进度"):
-            # 1. 生成原始电路并计算基础数据
+        # 准备所有任务参数
+        tasks = []
+        for base_idx in trange(self.base_num_samples):
+            # 先生成原始电路（单进程生成，避免随机种子冲突）
             qc_origin = self._generate_random_origin_circuit()
             origin_info = extract_circuit_info(qc_origin)
             origin_quantum = compute_quantum_equivalence_data(qc_origin)
             origin_dag = circuit_to_dag(qc_origin)
             g_data = self._dag_to_pyg_data(origin_dag)
 
-            # 2. 遍历所有拓扑类型
             for topo_idx, topo_type in enumerate(self.topo_types):
                 topo_code = TOPO_TYPE_MAP[topo_type]
-                # 生成耦合图（已修复star拓扑，节点数=num_qubits）
                 coupling_map = generate_coupling_map(topo_type, self.num_qubits)
-                # 拓扑图转PyG Data（节点特征：比特索引独热编码）
                 topo_data = Data(
-                    x=torch.eye(self.num_qubits),  # 每个比特对应一个节点，特征为独热编码
+                    x=torch.eye(self.num_qubits),
                     edge_index=torch.tensor(coupling_map.get_edges(), dtype=torch.long).t().contiguous()
                 )
 
-                # 3. 遍历所有transpile参数组合
                 for param_idx, param in enumerate(self.param_combinations):
-                    try:
-                        # 优化电路（移除initial_layout约束，依赖拓扑修复逻辑）
-                        qc_opt = transpile(                            qc_origin,
-                            coupling_map=coupling_map,
-                            layout_method=param["layout_method"],
-                            routing_method=param["routing_method"],
-                            optimization_level=param["optimization_level"],
-                            basis_gates=self.basic_gates,
-                            seed_transpiler=base_idx + topo_idx + param_idx + self.seed # 固定随机种子确保可复现
-                        )
+                    tasks.append(dict(
+                        base_idx=base_idx, topo_idx=topo_idx, param_idx=param_idx,
+                        qc_origin=qc_origin, origin_info=origin_info, origin_quantum=origin_quantum,
+                        g_data=g_data, topo_code=topo_code, coupling_map=coupling_map, topo_data=topo_data,
+                        param=param,
+                    ))
 
-                        # 验证优化后电路比特数（与原始一致，依赖拓扑生成逻辑）
-                        if qc_opt.num_qubits != self.num_qubits:
-                            print(f"警告：优化后比特数({qc_opt.num_qubits})≠原始({self.num_qubits})，跳过该样本")
-                            continue
+        # 多进程处理任务
+        num_cores = multiprocessing.cpu_count() - 1  # 保留1个核心避免系统卡顿
+        results = Parallel(n_jobs=num_cores, verbose=10)(
+            delayed(self._process_single_sample)(**task) for task in tasks
+        )
 
-                        # 4. 计算优化后电路的核心数据
-                        opt_info = extract_circuit_info(qc_opt)
-                        opt_quantum = compute_quantum_equivalence_data(qc_opt)
-                        opt_metrics = compute_optimization_metrics(qc_origin, qc_opt)
-                        # 优化后电路转 PyG Data
-                        opt_dag = circuit_to_dag(qc_opt)
-                        g_star_data = self._dag_to_pyg_data(opt_dag)
-
-                        # 5. 元信息整数编码（适配批量化）
-                        layout_code = LAYOUT_METHOD_MAP[param["layout_method"]]
-                        routing_code = ROUTING_METHOD_MAP[param["routing_method"]]
-
-                        # 6. 构造完整样本（含所有需求信息）
-                        sample = {
-                            # 1. 图数据（CVAE 输入/目标）
-                            "g": g_data,                  # 原始电路图（输入条件1）
-                            "t": topo_data,               # 拓扑图（输入条件2）
-                            "g_star": g_star_data,        # 优化后电路图（模型目标）
-
-                            # 2. 电路等价性数据（验证功能一致性）
-                            "quantum_origin": {
-                                "statevector": torch.tensor(origin_quantum["statevector"], dtype=torch.complex64),
-                                "unitary": torch.tensor(origin_quantum["unitary"], dtype=torch.complex64)
-                            },
-                            "quantum_optimized": {
-                                "statevector": torch.tensor(opt_quantum["statevector"], dtype=torch.complex64),
-                                "unitary": torch.tensor(opt_quantum["unitary"], dtype=torch.complex64)
-                            },
-
-                            # 3. 优化后电路指标（评估优化效果）
-                            "optimization_metrics": opt_metrics,
-
-                            # 4. 输入电路原信息（训练辅助特征/评估对比）
-                            "circuit_origin_info": origin_info,
-                            "circuit_optimized_info": opt_info,
-
-                            # 5. 元信息（样本追溯/条件筛选）
-                            "meta": {
-                                "base_idx": base_idx,
-                                "topo_type": topo_code,
-                                "layout_method": layout_code,
-                                "routing_method": routing_code,
-                                "optimization_level": param["optimization_level"]
-                            }
-                        }
-
-                        # 7. 保存样本
-                        sample_path = os.path.join(
-                            self.processed_dir,
-                            f"sample_b{base_idx}_t{topo_idx}_p{param_idx}.pt"
-                        )
-                        torch.save(sample, sample_path)
-                        sample_count += 1
-
-                    except qiskit.transpiler.exceptions.TranspilerError as e:
-                        print(f"\n样本生成失败（b{base_idx}_t{topo_idx}_p{param_idx}）：{e}")
-                        continue
-
+        sample_count = sum(results)
         print(f"\n=== 数据集生成完成 ===")
         print(f"成功生成样本数：{sample_count}/{self.total_samples}")
         if sample_count < self.total_samples:
             print(f"提示：部分样本生成失败，可检查日志定位问题（如门类型、拓扑参数）")
+
+    def _process_single_sample(self, base_idx, topo_idx, param_idx,
+                               qc_origin, origin_info, origin_quantum, g_data,
+                               topo_code, coupling_map, topo_data,
+                               param):
+        """单样本处理函数（供多进程调用）"""
+        try:
+            qc_opt = transpile(
+                qc_origin,
+                coupling_map=coupling_map,
+                layout_method=param["layout_method"],
+                routing_method=param["routing_method"],
+                optimization_level=param["optimization_level"],
+                basis_gates=self.basic_gates,
+                seed_transpiler=base_idx + topo_idx + param_idx + self.seed
+            )
+
+            if qc_opt.num_qubits != self.num_qubits:
+                return 0
+
+            opt_info = extract_circuit_info(qc_opt)
+            opt_quantum = compute_quantum_equivalence_data(qc_opt)
+            opt_metrics = compute_optimization_metrics(qc_origin, qc_opt)
+            opt_dag = circuit_to_dag(qc_opt)
+            g_star_data = self._dag_to_pyg_data(opt_dag)
+
+            layout_code = LAYOUT_METHOD_MAP[param["layout_method"]]
+            routing_code = ROUTING_METHOD_MAP[param["routing_method"]]
+
+            sample = {
+                "g": g_data,
+                "t": topo_data,
+                "g_star": g_star_data,
+                "quantum_origin": {
+                    "statevector": torch.tensor(origin_quantum["statevector"], dtype=torch.complex64),
+                    "unitary": torch.tensor(origin_quantum["unitary"], dtype=torch.complex64)
+                },
+                "quantum_optimized": {
+                    "statevector": torch.tensor(opt_quantum["statevector"], dtype=torch.complex64),
+                    "unitary": torch.tensor(opt_quantum["unitary"], dtype=torch.complex64)
+                },
+                "optimization_metrics": opt_metrics,
+                "circuit_origin_info": origin_info,
+                "circuit_optimized_info": opt_info,
+                "meta": {
+                    "base_idx": base_idx,
+                    "topo_type": topo_code,
+                    "layout_method": layout_code,
+                    "routing_method": routing_code,
+                    "optimization_level": param["optimization_level"]
+                }
+            }
+
+            sample_path = os.path.join(
+                self.processed_dir,
+                f"sample_b{base_idx}_t{topo_idx}_p{param_idx}.pt"
+            )
+            torch.save(sample, sample_path)
+            return 1
+        except qiskit.transpiler.exceptions.TranspilerError as e:
+            print(f"\n样本生成失败（b{base_idx}_t{topo_idx}_p{param_idx}）：{e}")
+            return 0
 
     def len(self) -> int:
         return self.total_samples
@@ -291,8 +294,10 @@ def custom_collate_fn(batch: List[Dict[str, any]]) -> Dict[str, any]:
     batched_data["optimization_metrics"] = {
         # "fidelity": torch.tensor([s["optimization_metrics"]["fidelity"] for s in batch], dtype=torch.float32),
         "depth_ratio": torch.tensor([s["optimization_metrics"]["depth_ratio"] for s in batch], dtype=torch.float32),
-        "total_gate_ratio": torch.tensor([s["optimization_metrics"]["total_gate_ratio"] for s in batch], dtype=torch.float32),
-        "two_qubit_ratio": torch.tensor([s["optimization_metrics"]["two_qubit_ratio"] for s in batch], dtype=torch.float32)
+        "total_gate_ratio": torch.tensor([s["optimization_metrics"]["total_gate_ratio"] for s in batch],
+                                         dtype=torch.float32),
+        "two_qubit_ratio": torch.tensor([s["optimization_metrics"]["two_qubit_ratio"] for s in batch],
+                                        dtype=torch.float32)
     }
 
     # 4. 处理电路原信息（整数转张量，形状 [batch_size]）
@@ -306,7 +311,8 @@ def custom_collate_fn(batch: List[Dict[str, any]]) -> Dict[str, any]:
         "num_qubits": torch.tensor([s["circuit_optimized_info"]["num_qubits"] for s in batch], dtype=torch.long),
         "total_gates": torch.tensor([s["circuit_optimized_info"]["total_gates"] for s in batch], dtype=torch.long),
         "depth": torch.tensor([s["circuit_optimized_info"]["depth"] for s in batch], dtype=torch.long),
-        "two_qubit_gates": torch.tensor([s["circuit_optimized_info"]["two_qubit_gates"] for s in batch], dtype=torch.long)
+        "two_qubit_gates": torch.tensor([s["circuit_optimized_info"]["two_qubit_gates"] for s in batch],
+                                        dtype=torch.long)
     }
 
     # 5. 处理元信息（整数张量，形状 [batch_size]）
@@ -323,14 +329,14 @@ def custom_collate_fn(batch: List[Dict[str, any]]) -> Dict[str, any]:
 
 # -------------------------- 数据加载器封装（一键获取训练/评估数据） --------------------------
 def get_dataloader(
-    batch_size: int = 16,
-    base_num_samples: int = 100,
-    num_qubits: int = 4,
-    max_depth: int = 10,
-    topo_types: List[str] = None,
-    basic_gates: List[str] = None,
-    regenerate: bool = False,
-    shuffle: bool = True
+        batch_size: int = 16,
+        base_num_samples: int = 100,
+        num_qubits: int = 4,
+        max_depth: int = 10,
+        topo_types: List[str] = None,
+        basic_gates: List[str] = None,
+        regenerate: bool = False,
+        shuffle: bool = True
 ) -> 'DataLoader':
     """创建 QC Graph-CVAE 的数据加载器，直接用于训练/评估"""
     dataset = QuantumCircuitDataset(

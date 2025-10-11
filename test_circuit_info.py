@@ -14,12 +14,12 @@ from circuit_info import (
 def test_extract_circuit_info():
     """测试电路信息提取函数，验证比特数、门数量、深度等指标"""
     # 创建包含多种门的测试电路
-    qc = QuantumCircuit(2, 2) # 2 Qb, 2 Cb
-    qc.h(0)          # 单比特门
-    qc.x(1)          # 单比特门
-    qc.cx(0, 1)      # 双比特门
-    qc.swap(0, 1)    # 双比特门
-    qc.measure(0, 0) # 测量门（应被排除）
+    qc = QuantumCircuit(2, 2)  # 2 Qb, 2 Cb
+    qc.h(0)  # 单比特门
+    qc.x(1)  # 单比特门
+    qc.cx(0, 1)  # 双比特门
+    qc.swap(0, 1)  # 双比特门
+    qc.measure(0, 0)  # 测量门（应被排除）
     qc.measure(1, 1)
 
     # 提取信息
@@ -63,8 +63,8 @@ def test_compute_optimization_metrics():
 
     # 优化后电路（假设减少了一半门）
     qc_opt = QuantumCircuit(2)
-    qc_opt.x(0)         # 合并H+X为X（示例优化）
-    qc_opt.cx(0, 1)     # 优化：1单比特门，1双比特门，深度2
+    qc_opt.x(0)  # 合并H+X为X（示例优化）
+    qc_opt.cx(0, 1)  # 优化：1单比特门，1双比特门，深度2
 
     # 计算指标
     metrics = compute_optimization_metrics(qc_origin, qc_opt)

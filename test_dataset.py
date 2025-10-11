@@ -111,7 +111,7 @@ def test_generate_transpile_params(temp_dir):
     params = dataset._generate_transpile_params()
 
     # 验证参数组合数量（opt=0时仅保留sabre组合）
-    assert len(params) == 1 + 3*3*2  # 1个opt=0组合 + 3*3*2个opt>0组合
+    assert len(params) == 1 + 3 * 3 * 2  # 1个opt=0组合 + 3*3*2个opt>0组合
 
     # 验证opt=0时的参数
     opt0_params = [p for p in params if p["optimization_level"] == 0]
