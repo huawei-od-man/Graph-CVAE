@@ -7,7 +7,6 @@ from typing import List, Tuple, Dict, Optional
 from torch_geometric.data import Data, Dataset, Batch
 
 from joblib import Parallel, delayed
-import multiprocessing
 
 from converter import dag_to_pyg_data
 
@@ -29,8 +28,8 @@ from utils import GATE_CLS_MAP
 # -------------------------- 全局映射字典（字符串转整数） --------------------------
 TOPO_TYPE_MAP = {"linear": 0, "star": 1, "grid": 2, "ring": 3, 'random': 4}
 LAYOUT_METHOD_MAP = {"trivial": 0, "dense": 1, "sabre": 2}
-ROUTING_METHOD_MAP = {"basic": 0, "lookahead": 1, "sabre": 2}
-
+ROUTING_METHOD_MAP = {"basic": 0, "sabre": 1,} #"lookahead": 2, }
+# Lookahead routing is very slow. Bottlenect.
 
 # -------------------------- 数据集类（含所有需求信息） --------------------------
 class QuantumCircuitDataset(Dataset):
@@ -42,11 +41,13 @@ class QuantumCircuitDataset(Dataset):
                  topo_types: List[str] = None,
                  basic_gates: List[str] = None,
                  regenerate: bool = False,
+                 n_jobs: int = 8,
                  seed: int = 42):
         super().__init__(root)
         self.seed = seed
+        self.n_jobs = n_jobs
         # 初始化参数与验证
-        self.topo_types = topo_types if topo_types is not None else ["linear", "star", "grid", "ring"]
+        self.topo_types = topo_types if topo_types is not None else list(TOPO_TYPE_MAP.keys())
         self._validate_topo_types()
         self.basic_gates = basic_gates if basic_gates is not None else list(GATE_CLS_MAP.keys())
 
@@ -173,8 +174,7 @@ class QuantumCircuitDataset(Dataset):
                     ))
 
         # 多进程处理任务
-        num_cores = multiprocessing.cpu_count() - 1  # 保留1个核心避免系统卡顿
-        results = Parallel(n_jobs=num_cores, verbose=10)(
+        results = Parallel(n_jobs=self.n_jobs, verbose=10)(
             delayed(self._process_single_sample)(**task) for task in tasks
         )
 
@@ -268,91 +268,3 @@ class QuantumCircuitDataset(Dataset):
         if not os.path.exists(sample_path):
             raise FileNotFoundError(f"样本文件不存在：{sample_path}（可能生成失败）")
         return torch.load(sample_path)
-
-
-# -------------------------- 自定义批处理函数（适配复杂样本结构） --------------------------
-def custom_collate_fn(batch: List[Dict[str, any]]) -> Dict[str, any]:
-    """将多个样本合并为批次，处理图、量子态、指标等不同类型数据"""
-    batched_data = {}
-
-    # 1. 处理 PyG 图数据（用 Batch.from_data_list 合并）
-    graph_keys = ["g", "t", "g_star"]
-    for key in graph_keys:
-        batched_data[key] = Batch.from_data_list([sample[key] for sample in batch])
-
-    # 2. 处理量子态数据（复数张量堆叠，形状 [batch_size, ...]）
-    batched_data["quantum_origin"] = {
-        "statevector": torch.stack([s["quantum_origin"]["statevector"] for s in batch]),
-        "unitary": torch.stack([s["quantum_origin"]["unitary"] for s in batch])
-    }
-    batched_data["quantum_optimized"] = {
-        "statevector": torch.stack([s["quantum_optimized"]["statevector"] for s in batch]),
-        "unitary": torch.stack([s["quantum_optimized"]["unitary"] for s in batch])
-    }
-
-    # 3. 处理优化指标（浮点数转张量，形状 [batch_size]）
-    batched_data["optimization_metrics"] = {
-        # "fidelity": torch.tensor([s["optimization_metrics"]["fidelity"] for s in batch], dtype=torch.float32),
-        "depth_ratio": torch.tensor([s["optimization_metrics"]["depth_ratio"] for s in batch], dtype=torch.float32),
-        "total_gate_ratio": torch.tensor([s["optimization_metrics"]["total_gate_ratio"] for s in batch],
-                                         dtype=torch.float32),
-        "two_qubit_ratio": torch.tensor([s["optimization_metrics"]["two_qubit_ratio"] for s in batch],
-                                        dtype=torch.float32)
-    }
-
-    # 4. 处理电路原信息（整数转张量，形状 [batch_size]）
-    batched_data["circuit_origin_info"] = {
-        "num_qubits": torch.tensor([s["circuit_origin_info"]["num_qubits"] for s in batch], dtype=torch.long),
-        "total_gates": torch.tensor([s["circuit_origin_info"]["total_gates"] for s in batch], dtype=torch.long),
-        "depth": torch.tensor([s["circuit_origin_info"]["depth"] for s in batch], dtype=torch.long),
-        "two_qubit_gates": torch.tensor([s["circuit_origin_info"]["two_qubit_gates"] for s in batch], dtype=torch.long)
-    }
-    batched_data["circuit_optimized_info"] = {
-        "num_qubits": torch.tensor([s["circuit_optimized_info"]["num_qubits"] for s in batch], dtype=torch.long),
-        "total_gates": torch.tensor([s["circuit_optimized_info"]["total_gates"] for s in batch], dtype=torch.long),
-        "depth": torch.tensor([s["circuit_optimized_info"]["depth"] for s in batch], dtype=torch.long),
-        "two_qubit_gates": torch.tensor([s["circuit_optimized_info"]["two_qubit_gates"] for s in batch],
-                                        dtype=torch.long)
-    }
-
-    # 5. 处理元信息（整数张量，形状 [batch_size]）
-    batched_data["meta"] = {
-        "base_idx": torch.tensor([s["meta"]["base_idx"] for s in batch], dtype=torch.long),
-        "topo_type": torch.tensor([s["meta"]["topo_type"] for s in batch], dtype=torch.long),
-        "layout_method": torch.tensor([s["meta"]["layout_method"] for s in batch], dtype=torch.long),
-        "routing_method": torch.tensor([s["meta"]["routing_method"] for s in batch], dtype=torch.long),
-        "optimization_level": torch.tensor([s["meta"]["optimization_level"] for s in batch], dtype=torch.long)
-    }
-
-    return batched_data
-
-
-# -------------------------- 数据加载器封装（一键获取训练/评估数据） --------------------------
-def get_dataloader(
-        batch_size: int = 16,
-        base_num_samples: int = 100,
-        num_qubits: int = 4,
-        max_depth: int = 10,
-        topo_types: List[str] = None,
-        basic_gates: List[str] = None,
-        regenerate: bool = False,
-        shuffle: bool = True
-) -> 'DataLoader':
-    """创建 QC Graph-CVAE 的数据加载器，直接用于训练/评估"""
-    dataset = QuantumCircuitDataset(
-        root="./data",
-        base_num_samples=base_num_samples,
-        num_qubits=num_qubits,
-        max_depth=max_depth,
-        topo_types=topo_types,
-        basic_gates=basic_gates,
-        regenerate=regenerate
-    )
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        collate_fn=custom_collate_fn,  # 关键：用自定义批处理适配复杂样本
-        drop_last=True,  # 丢弃最后一个不完整批次
-        pin_memory=True  # 加速 GPU 数据传输（如需 CPU 训练可设为 False）
-    )
