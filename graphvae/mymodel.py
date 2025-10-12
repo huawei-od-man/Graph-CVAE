@@ -4,11 +4,16 @@ import scipy.optimize
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
-from torch import optim
 import torch.nn.functional as F
 import torch.nn.init as init
 
+from torch_geometric.nn.conv import GCNConv
+from torch_geometric.nn import global_max_pool, global_mean_pool
+from torch_geometric.utils import to_dense_batch
+
 import model
+
+device = 0 if torch.cuda.is_available() else 'cpu'
 
 
 class GraphVAE(nn.Module):
@@ -20,26 +25,80 @@ class GraphVAE(nn.Module):
             latent_dim: dimension of the latent representation of graph.
         '''
         super(GraphVAE, self).__init__()
-        self.conv1 = model.GraphConv(input_dim=input_dim, output_dim=hidden_dim)
-        self.bn1 = nn.BatchNorm1d(input_dim)
-        self.conv2 = model.GraphConv(input_dim=hidden_dim, output_dim=hidden_dim)
-        self.bn2 = nn.BatchNorm1d(input_dim)
+        self.conv1 = GCNConv(input_dim, hidden_dim)
+        self.bn1 = nn.BatchNorm1d(hidden_dim)
+        self.conv2 = GCNConv(hidden_dim, hidden_dim)
+        self.bn2 = nn.BatchNorm1d(hidden_dim)
         self.act = nn.ReLU()
 
         output_dim = max_num_nodes * (max_num_nodes + 1) // 2
-        # self.vae = model.MLP_VAE_plain(hidden_dim, latent_dim, output_dim)
-        self.vae = model.MLP_VAE_plain(input_dim * input_dim, latent_dim, output_dim)
+        self.vae = model.MLP_VAE_plain(hidden_dim, latent_dim, output_dim)
+        # self.vae = model.MLP_VAE_plain(input_dim * input_dim, latent_dim, output_dim)
         # self.feature_mlp = model.MLP_plain(latent_dim, latent_dim, output_dim)
 
         self.max_num_nodes = max_num_nodes
-        for m in self.modules():
-            if isinstance(m, model.GraphConv):
-                m.weight.data = init.xavier_uniform(m.weight.data, gain=nn.init.calculate_gain('relu'))
-            elif isinstance(m, nn.BatchNorm1d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
-
         self.pool = pool
+
+    def forward(self, input_features, edge_index):
+        x = self.conv1(input_features, edge_index)
+        x = self.bn1(x)
+        x = self.act(x)
+        x = self.conv2(x, edge_index)
+        x = self.bn2(x)
+
+        # pool over all nodes
+        graph_h = self.pool_graph(x)
+        # graph_h = input_features.view(-1, self.max_num_nodes * self.max_num_nodes)
+        # vae
+        h_decode, z_mu, z_lsgms = self.vae(graph_h)
+        out = F.sigmoid(h_decode)
+        out_tensor = out.cpu().data
+        recon_adj_lower = self.recover_adj_lower(out_tensor)
+        recon_adj_tensor = self.recover_full_adj_from_lower(recon_adj_lower)
+
+        # set matching features be degree
+        out_features = torch.sum(recon_adj_tensor, 1)
+
+        adj_data = to_dense_batch(edge_index)
+        adj_features = torch.sum(adj_data, 1)
+
+        S = self.edge_similarity_matrix(adj_data, recon_adj_tensor, adj_features, out_features,
+                                        self.deg_feature_similarity)
+
+        # initialization strategies
+        init_corr = 1 / self.max_num_nodes
+        init_assignment = torch.ones(self.max_num_nodes, self.max_num_nodes) * init_corr
+        # init_assignment = torch.FloatTensor(4, 4)
+        # init.uniform(init_assignment)
+        assignment = self.mpm(init_assignment, S)
+        # print('Assignment: ', assignment)
+
+        # matching
+        # use negative of the assignment score since the alg finds min cost flow
+        row_ind, col_ind = scipy.optimize.linear_sum_assignment(-assignment.numpy())
+        # print('row: ', row_ind)
+        # print('col: ', col_ind)
+        # order row index according to col index
+        adj_permuted = self.permute_adj(adj_data, row_ind, col_ind)
+        # adj_permuted = adj_data
+        adj_vectorized = adj_permuted[torch.triu(torch.ones(self.max_num_nodes, self.max_num_nodes)) == 1].squeeze_()
+        adj_vectorized_var = Variable(adj_vectorized).to(device)
+
+        # print(adj)
+        # print('permuted: ', adj_permuted)
+        # print('recon: ', recon_adj_tensor)
+        adj_recon_loss = self.adj_recon_loss(adj_vectorized_var, out[0])
+        print('recon: ', adj_recon_loss)
+        # print(adj_vectorized_var)
+        # print(out[0])
+
+        loss_kl = -0.5 * torch.sum(1 + z_lsgms - z_mu.pow(2) - z_lsgms.exp())
+        loss_kl /= self.max_num_nodes * self.max_num_nodes  # normalize
+        print('kl: ', loss_kl)
+
+        loss = adj_recon_loss + loss_kl
+
+        return loss
 
     # Add to GraphVAE class in mymodel.py
     def generate(self, num_samples=1):
@@ -47,7 +106,7 @@ class GraphVAE(nn.Module):
         self.eval()
         with torch.no_grad():
             # Sample from standard normal distribution
-            z = torch.randn(num_samples, self.vae.latent_dim).cuda()
+            z = torch.randn(num_samples, self.vae.latent_dim).to(device)
             # Decode to adjacency matrix parameters
             h_decode = self.vae.decode(z)
             adj_pred = F.sigmoid(h_decode)  # Get probabilities
@@ -127,71 +186,11 @@ class GraphVAE(nn.Module):
 
     def pool_graph(self, x):
         if self.pool == 'max':
-            out, _ = torch.max(x, dim=1, keepdim=False)
+            return global_max_pool(x, None)
         elif self.pool == 'sum':
-            out = torch.sum(x, dim=1, keepdim=False)
-        return out
-
-    def forward(self, input_features, adj):
-        # x = self.conv1(input_features, adj)
-        # x = self.bn1(x)
-        # x = self.act(x)
-        # x = self.conv2(x, adj)
-        # x = self.bn2(x)
-
-        # pool over all nodes
-        # graph_h = self.pool_graph(x)
-        graph_h = input_features.view(-1, self.max_num_nodes * self.max_num_nodes)
-        # vae
-        h_decode, z_mu, z_lsgms = self.vae(graph_h)
-        out = F.sigmoid(h_decode)
-        out_tensor = out.cpu().data
-        recon_adj_lower = self.recover_adj_lower(out_tensor)
-        recon_adj_tensor = self.recover_full_adj_from_lower(recon_adj_lower)
-
-        # set matching features be degree
-        out_features = torch.sum(recon_adj_tensor, 1)
-
-        adj_data = adj.cpu().data[0]
-        adj_features = torch.sum(adj_data, 1)
-
-        S = self.edge_similarity_matrix(adj_data, recon_adj_tensor, adj_features, out_features,
-                                        self.deg_feature_similarity)
-
-        # initialization strategies
-        init_corr = 1 / self.max_num_nodes
-        init_assignment = torch.ones(self.max_num_nodes, self.max_num_nodes) * init_corr
-        # init_assignment = torch.FloatTensor(4, 4)
-        # init.uniform(init_assignment)
-        assignment = self.mpm(init_assignment, S)
-        # print('Assignment: ', assignment)
-
-        # matching
-        # use negative of the assignment score since the alg finds min cost flow
-        row_ind, col_ind = scipy.optimize.linear_sum_assignment(-assignment.numpy())
-        # print('row: ', row_ind)
-        # print('col: ', col_ind)
-        # order row index according to col index
-        # adj_permuted = self.permute_adj(adj_data, row_ind, col_ind)
-        adj_permuted = adj_data
-        adj_vectorized = adj_permuted[torch.triu(torch.ones(self.max_num_nodes, self.max_num_nodes)) == 1].squeeze_()
-        adj_vectorized_var = Variable(adj_vectorized).cuda()
-
-        # print(adj)
-        # print('permuted: ', adj_permuted)
-        # print('recon: ', recon_adj_tensor)
-        adj_recon_loss = self.adj_recon_loss(adj_vectorized_var, out[0])
-        print('recon: ', adj_recon_loss)
-        # print(adj_vectorized_var)
-        # print(out[0])
-
-        loss_kl = -0.5 * torch.sum(1 + z_lsgms - z_mu.pow(2) - z_lsgms.exp())
-        loss_kl /= self.max_num_nodes * self.max_num_nodes  # normalize
-        print('kl: ', loss_kl)
-
-        loss = adj_recon_loss + loss_kl
-
-        return loss
+            return global_max_pool(x, None)
+        else:
+            raise ValueError(self.pool)
 
     def forward_test(self, input_features, adj):
         self.max_num_nodes = 4

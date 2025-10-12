@@ -27,7 +27,7 @@ def generate_and_plot(args):
     else:
         input_dim = 2
 
-    model = GraphVAE(input_dim, 64, 256, max_num_nodes).cuda()
+    model = GraphVAE(input_dim, 64, 256, max_num_nodes).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
